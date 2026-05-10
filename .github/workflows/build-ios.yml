@@ -1,0 +1,80 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build Unsigned IPA
+    runs-on: macos-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # ── 2. Cache Unity Library ─────────────────────────────────────────────
+      - name: Cache Unity Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-iOS-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-iOS-
+            Library-
+
+      # ── 3. Build with Unity ────────────────────────────────────────────────
+      - name: Build Unity iOS project
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_EMAIL:    ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_LICENSE:  ${{ secrets.UNITY_LICENSE }}
+        with:
+          unityVersion:     2018.3.9f1
+          targetPlatform:   iOS
+          buildName:        BaldisBasicsClassic
+          buildsPath:       builds
+          customParameters: -scriptingBackend IL2CPP -stripEngineCode false
+
+      # ── 4. Build unsigned IPA with xcodebuild ──────────────────────────────
+      - name: Build unsigned IPA
+        run: |
+          XCODE_PROJECT=$(find builds/iOS -name "*.xcodeproj" | head -1)
+          echo "Found: $XCODE_PROJECT"
+
+          # Build for simulator-style unsigned export
+          xcodebuild archive \
+            -project "$XCODE_PROJECT" \
+            -scheme Unity-iPhone \
+            -sdk iphoneos \
+            -archivePath $RUNNER_TEMP/BaldisBasics.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+          # Export as unsigned IPA
+          mkdir -p $RUNNER_TEMP/ipa
+          cp -r $RUNNER_TEMP/BaldisBasics.xcarchive/Products/Applications/. $RUNNER_TEMP/Payload
+          mkdir -p $RUNNER_TEMP/Payload
+          APP=$(find $RUNNER_TEMP/BaldisBasics.xcarchive/Products/Applications -name "*.app" | head -1)
+          cp -r "$APP" $RUNNER_TEMP/Payload/
+          cd $RUNNER_TEMP
+          zip -r ipa/BaldisBasicsClassic.ipa Payload/
+
+      # ── 5. Upload IPA ──────────────────────────────────────────────────────
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaldisBasicsClassic-iOS-Unsigned
+          path: ${{ runner.temp }}/ipa/BaldisBasicsClassic.ipa
+          retention-days: 14
+
+      # ── 6. Return Unity license ────────────────────────────────────────────
+      - name: Return Unity license
+        uses: game-ci/unity-return-license@v2
+        if: always()
